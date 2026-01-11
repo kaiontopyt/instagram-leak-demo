@@ -3,45 +3,47 @@ const fs = require('fs-extra');
 const axios = require('axios');
 const morgan = require('morgan');
 const UAParser = require('ua-parser-js');
-const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// DB setup
-const db = new sqlite3.Database('leaks.db');
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS leaks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ip TEXT,
-    geo TEXT,
-    userAgent TEXT,
-    referrer TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-});
+const LOG_FILE = 'leaks.json';
 
 // Middleware
 app.use(morgan('combined'));
 app.use(express.static('public'));
 
+// Load existing log
+async function loadLog() {
+  try {
+    const data = await fs.readFile(LOG_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    return [];
+  }
+}
+
+// Save log
+async function saveLog(entries) {
+  await fs.writeFile(LOG_FILE, JSON.stringify(entries, null, 2));
+}
+
 // Geo lookup
 async function getGeo(ip) {
   try {
     const res = await axios.get(`https://ipapi.co/${ip}/json/`, { timeout: 5000 });
-    return JSON.stringify(res.data);
+    return res.data;
   } catch {
-    return JSON.stringify({
+    return {
       city: 'Unknown',
       region: 'Unknown',
       country_name: 'Unknown',
       org: 'Unknown ISP'
-    });
+    };
   }
 }
 
-// Tracking endpoint (serves meme.jpg)
+// Tracking endpoint
 app.get('/track.png', async (req, res) => {
   const ip =
     req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
@@ -52,11 +54,11 @@ app.get('/track.png', async (req, res) => {
   const userAgent = req.headers['user-agent'] || 'unknown';
   const referrer = req.headers.referer || 'direct';
   const geo = await getGeo(ip);
+  const timestamp = new Date().toISOString();
 
-  db.run(
-    'INSERT INTO leaks (ip, geo, userAgent, referrer) VALUES (?, ?, ?, ?)',
-    [ip, geo, userAgent, referrer]
-  );
+  const entries = await loadLog();
+  entries.push({ ip, geo, userAgent, referrer, timestamp });
+  await saveLog(entries);
 
   const memePath = path.join(__dirname, 'public', 'meme.jpg');
   if (fs.existsSync(memePath)) {
@@ -69,62 +71,63 @@ app.get('/track.png', async (req, res) => {
 });
 
 // Show last 10 visitors
-app.get('/leaked', (req, res) => {
-  db.all('SELECT * FROM leaks ORDER BY id DESC LIMIT 10', (err, rows) => {
-    if (!rows || rows.length === 0) {
-      return res.send('<h1>No data yet. Open / or /track.png from some devices first.</h1>');
-    }
+app.get('/leaked', async (req, res) => {
+  const entries = await loadLog();
+  if (!entries.length) {
+    return res.send('<h1>No data yet. Open / or /track.png first.</h1>');
+  }
 
-    let blocks = '';
-    rows.forEach((row, i) => {
-      const geo = JSON.parse(row.geo);
-      const ua = new UAParser(row.userAgent).getResult();
+  const last10 = entries.slice(-10).reverse();
+  let blocks = '';
 
-      blocks += `
-        <div style="background:#fff;padding:15px;margin:10px 0;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.1);">
-          <h2>User #${rows.length - i}</h2>
-          <ul>
-            <li><strong>IP:</strong> ${row.ip}</li>
-            <li><strong>Location:</strong> ${geo.city || 'N/A'}, ${geo.region || 'N/A'}, ${geo.country_name || 'N/A'}</li>
-            <li><strong>ISP:</strong> ${geo.org || 'N/A'}</li>
-            <li><strong>Device:</strong> ${ua.device.type || 'Desktop'}</li>
-            <li><strong>OS:</strong> ${ua.os.name} ${ua.os.version}</li>
-            <li><strong>Browser:</strong> ${ua.browser.name}</li>
-            <li><strong>Referrer:</strong> ${row.referrer}</li>
-            <li><strong>Time:</strong> ${row.timestamp}</li>
-          </ul>
-        </div>
-      `;
-    });
+  last10.forEach((row, i) => {
+    const ua = new UAParser(row.userAgent).getResult();
+    const geo = row.geo;
 
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Last 10 Visitors</title>
-        <style>
-          body { font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; background:#f0f0f0; }
-          h1 { text-align:center; }
-        </style>
-      </head>
-      <body>
-        <h1>Last 10 People Tracked by This Link</h1>
-        ${blocks}
-      </body>
-      </html>
-    `);
+    blocks += `
+      <div style="background:#fff;padding:15px;margin:10px 0;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.1);">
+        <h2>User #${last10.length - i}</h2>
+        <ul>
+          <li><strong>IP:</strong> ${row.ip}</li>
+          <li><strong>Location:</strong> ${geo.city || 'N/A'}, ${geo.region || 'N/A'}, ${geo.country_name || 'N/A'}</li>
+          <li><strong>ISP:</strong> ${geo.org || 'N/A'}</li>
+          <li><strong>Device:</strong> ${ua.device.type || 'Desktop'}</li>
+          <li><strong>OS:</strong> ${ua.os.name} ${ua.os.version}</li>
+          <li><strong>Browser:</strong> ${ua.browser.name}</li>
+          <li><strong>Referrer:</strong> ${row.referrer}</li>
+          <li><strong>Time:</strong> ${row.timestamp}</li>
+        </ul>
+      </div>
+    `;
   });
+
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Last 10 Visitors</title>
+      <style>
+        body { font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; background:#f0f0f0; }
+        h1 { text-align:center; }
+      </style>
+    </head>
+    <body>
+      <h1>Last 10 People Tracked by This Link</h1>
+      ${blocks}
+    </body>
+    </html>
+  `);
 });
 
-// Landing page – only displays the image
+// Landing page – only image
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html>
     <head>
       <title>GTA Meme</title>
-      <meta property="og:title" content="." />
-      <meta property="og:description" content="." />
+      <meta property="og:title" content="😂 GTA Meme" />
+      <meta property="og:description" content="Relatable GTA V moment 😂" />
       <meta property="og:image" content="/track.png" />
       <meta property="og:type" content="website" />
     </head>
