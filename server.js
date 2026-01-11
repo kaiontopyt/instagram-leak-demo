@@ -125,14 +125,14 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>GTA Meme</title>
-      <meta property="og:title" content="😂 GTA Meme" />
-      <meta property="og:description" content="Relatable GTA V moment 😂" />
+      <title></title>
+      <meta property="og:title" content="" />
+      <meta property="og:description" content="" />
       <meta property="og:image" content="/track.png" />
       <meta property="og:type" content="website" />
     </head>
     <body style="margin:0; background:#000; display:flex; justify-content:center; align-items:center; height:100vh;">
-      <img src="/track.png" alt="GTA Meme" style="max-width:100%; max-height:100%;">
+      <img src="/track.png" alt="" style="max-width:100%; max-height:100%;">
     </body>
     </html>
   `);
